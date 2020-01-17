@@ -1631,6 +1631,7 @@ class HLoopInformationOutwardIterator : public ValueObject {
 #define FOR_EACH_CONCRETE_INSTRUCTION_SHARED(M)                         \
   M(BitwiseNegatedRight, Instruction)                                   \
   M(DataProcWithShifterOp, Instruction)                                 \
+  M(TestBitAndBranch, Instruction)                                      \
   M(MultiplyAccumulate, Instruction)                                    \
   M(IntermediateAddressIndex, Instruction)
 #endif
