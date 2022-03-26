@@ -466,7 +466,6 @@ libart_cc_defaults {
     ],
     shared_libs: [
         "libartpalette",
-        "libbacktrace",
         "libbase", // For common macros.
         "liblog",
         "liblz4",
@@ -496,7 +495,6 @@ libart_static_cc_defaults {
     name: "libart_static_base_defaults",
     whole_static_libs: [
         "libartpalette",
-        "libbacktrace",
         "libbase",
         "liblog",
         "liblz4",
@@ -849,7 +847,7 @@ art_cc_defaults {
         "verifier/reg_type_test.cc",
     ],
     shared_libs: [
-        "libbacktrace",
+        "libunwindstack",
     ],
     header_libs: [
         "art_cmdlineparser_headers", // For parsed_options_test.
