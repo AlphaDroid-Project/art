@@ -2670,7 +2670,7 @@ extern "C" void artMethodEntryHook(ArtMethod* method, Thread* self, ArtMethod** 
   }
 }
 
-extern "C" int artMethodExitHook(Thread* self,
+extern "C" void artMethodExitHook(Thread* self,
                                  ArtMethod* method,
                                  uint64_t* gpr_result,
                                  uint64_t* fpr_result)
@@ -2728,7 +2728,10 @@ extern "C" int artMethodExitHook(Thread* self,
   }
 
   if (self->IsExceptionPending() || self->ObserveAsyncException()) {
-    return 1;
+    // The exception was thrown from the method exit callback. We should not call  method unwind
+    // callbacks for this case.
+    self->QuickDeliverException(/* is_method_exit_exception= */ true);
+    UNREACHABLE();
   }
 
   if (deoptimize) {
@@ -2741,8 +2744,6 @@ extern "C" int artMethodExitHook(Thread* self,
     artDeoptimize(self);
     UNREACHABLE();
   }
-
-  return 0;
 }
 
 }  // namespace art
