@@ -807,7 +807,6 @@ bool HInliner::TryInlineMonomorphicCall(
   // Run type propagation to get the guard typed, and eventually propagate the
   // type of the receiver.
   ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetClassLoader(),
                                      outer_compilation_unit_.GetDexCache(),
                                      /* is_first_run= */ false);
   rtp_fixup.Run();
@@ -1029,7 +1028,6 @@ bool HInliner::TryInlinePolymorphicCall(
 
   // Run type propagation to get the guards typed.
   ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetClassLoader(),
                                      outer_compilation_unit_.GetDexCache(),
                                      /* is_first_run= */ false);
   rtp_fixup.Run();
@@ -1220,7 +1218,6 @@ bool HInliner::TryInlinePolymorphicCallToSameTarget(
 
   // Run type propagation to get the guard typed.
   ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetClassLoader(),
                                      outer_compilation_unit_.GetDexCache(),
                                      /* is_first_run= */ false);
   rtp_fixup.Run();
@@ -1237,7 +1234,6 @@ void HInliner::MaybeRunReferenceTypePropagation(HInstruction* replacement,
     // Actual return value has a more specific type than the method's declared
     // return type. Run RTP again on the outer graph to propagate it.
     ReferenceTypePropagation(graph_,
-                             outer_compilation_unit_.GetClassLoader(),
                              outer_compilation_unit_.GetDexCache(),
                              /* is_first_run= */ false).Run();
   }
@@ -1696,7 +1692,6 @@ HInstanceFieldGet* HInliner::CreateInstanceFieldGet(uint32_t field_index,
     Handle<mirror::DexCache> dex_cache =
         graph_->GetHandleCache()->NewHandle(referrer->GetDexCache());
     ReferenceTypePropagation rtp(graph_,
-                                 outer_compilation_unit_.GetClassLoader(),
                                  dex_cache,
                                  /* is_first_run= */ false);
     rtp.Visit(iget);
@@ -1819,7 +1814,6 @@ void HInliner::SubstituteArguments(HGraph* callee_graph,
   // are more specific than the declared ones, run RTP again on the inner graph.
   if (run_rtp || ArgumentTypesMoreSpecific(invoke_instruction, resolved_method)) {
     ReferenceTypePropagation(callee_graph,
-                             outer_compilation_unit_.GetClassLoader(),
                              dex_compilation_unit.GetDexCache(),
                              /* is_first_run= */ false).Run();
   }
