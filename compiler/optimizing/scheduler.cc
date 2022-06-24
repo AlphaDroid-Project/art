@@ -718,7 +718,7 @@ bool HScheduler::IsSchedulable(const HInstruction* instruction) const {
   //    HLoadException
   //    HMemoryBarrier
   //    HMonitorOperation
-  //    HNativeDebugInfo
+  //    HNop
   //    HThrow
   //    HTryBoundary
   //    All volatile field access e.g. HInstanceFieldGet
