@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <sys/param.h>
 
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -113,15 +114,40 @@ class OatFileAssistantTest : public OatFileAssistantBaseTest,
     }
   }
 
-  int GetDexOptNeeded(
-      OatFileAssistant* assistant,
-      CompilerFilter::Filter compiler_filter,
-      bool profile_changed = false,
-      bool downgrade = false) {
-    return assistant->GetDexOptNeeded(
-        compiler_filter,
-        profile_changed,
-        downgrade);
+  // Verifies the current version of `GetDexOptNeeded` (called from artd).
+  void VerifyGetDexOptNeeded(OatFileAssistant* assistant,
+                             CompilerFilter::Filter compiler_filter,
+                             OatFileAssistant::DexOptTrigger dexopt_trigger,
+                             bool expected_dexopt_needed,
+                             bool expected_is_vdex_usable,
+                             OatFileAssistant::Location expected_location) {
+    OatFileAssistant::DexOptStatus status;
+    EXPECT_EQ(
+        assistant->GetDexOptNeeded(compiler_filter, dexopt_trigger, &status),
+        expected_dexopt_needed);
+    EXPECT_EQ(status.IsVdexUsable(), expected_is_vdex_usable);
+    EXPECT_EQ(status.GetLocation(), expected_location);
+  }
+
+  // Verifies all versions of `GetDexOptNeeded` with the default dexopt trigger.
+  void VerifyGetDexOptNeededDefault(OatFileAssistant* assistant,
+                                    CompilerFilter::Filter compiler_filter,
+                                    bool expected_dexopt_needed,
+                                    bool expected_is_vdex_usable,
+                                    OatFileAssistant::Location expected_location,
+                                    int expected_legacy_result) {
+    // Verify the current version (called from artd).
+    VerifyGetDexOptNeeded(assistant,
+                          compiler_filter,
+                          default_trigger_,
+                          expected_dexopt_needed,
+                          expected_is_vdex_usable,
+                          expected_location);
+
+    // Verify the legacy version (called from PM).
+    EXPECT_EQ(
+        assistant->GetDexOptNeeded(compiler_filter, /*profile_changed=*/false, /*downgrade=*/false),
+        expected_legacy_result);
   }
 
   static std::unique_ptr<ClassLoaderContext> InitializeDefaultContext() {
@@ -176,6 +202,8 @@ class OatFileAssistantTest : public OatFileAssistantBaseTest,
 
   std::unique_ptr<ClassLoaderContext> default_context_ = InitializeDefaultContext();
   bool with_runtime_;
+  const OatFileAssistant::DexOptTrigger default_trigger_{.targetFilterIsBetter = true,
+                                                         .primaryBootImageBecomesUsable = true};
 };
 
 class ScopedNonWritable {
@@ -305,8 +333,12 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithUpToDateContextRelative) {
   OatFileAssistant oat_file_assistant =
       CreateOatFileAssistant(dex_location.c_str(), relative_context.get());
 
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kDefaultCompilerFilter));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kDefaultCompilerFilter,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
 }
 
 // Case: We have a DEX file, but no OAT file for it.
@@ -319,14 +351,30 @@ TEST_P(OatFileAssistantTest, DexNoOat) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeedProfile));
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeedProfile,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -346,8 +394,12 @@ TEST_P(OatFileAssistantTest, NoDexNoOat) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
   EXPECT_FALSE(oat_file_assistant.HasDexFiles());
 
   // Trying to get the best oat file should fail, but not crash.
@@ -368,14 +420,30 @@ TEST_P(OatFileAssistantTest, OdexUpToDate) {
   // Force the use of oat location by making the dex parent not writable.
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kEverything));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kEverything,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
@@ -402,14 +470,30 @@ TEST_P(OatFileAssistantTest, OdexUpToDatePartialBootImage) {
   // Force the use of oat location by making the dex parent not writable.
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kEverything));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kEverything,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
@@ -440,14 +524,30 @@ TEST_P(OatFileAssistantTest, OdexUpToDateSymLink) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kEverything));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kEverything,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
@@ -476,14 +576,30 @@ TEST_P(OatFileAssistantTest, OatUpToDate) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kEverything));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kEverything,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -519,14 +635,30 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithFd) {
                                                                vdex_fd.get(),
                                                                odex_fd.get(),
                                                                zip_fd.get());
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kEverything));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kEverything,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
@@ -558,12 +690,24 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithInvalidOdexFd) {
                                                                vdex_fd.get(),
                                                                /*oat_fd=*/-1,
                                                                zip_fd.get());
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kEverything));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kEverything,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -595,8 +739,12 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithInvalidVdexFd) {
                                                                odex_fd.get(),
                                                                zip_fd.get());
 
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
@@ -620,8 +768,12 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithInvalidOdexVdexFd) {
                                                                /*vdex_fd=*/-1,
                                                                /*oat_fd=*/-1,
                                                                zip_fd);
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
 }
@@ -643,10 +795,18 @@ TEST_P(OatFileAssistantTest, VdexUpToDateNoOdex) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
 
   // Make sure we don't crash in this case when we dump the status. We don't
   // care what the actual dumped value is.
@@ -668,8 +828,12 @@ TEST_P(OatFileAssistantTest, EmptyVdexOdex) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
 }
 
 // Case: We have a DEX file and up-to-date (OAT) VDEX file for it, but no OAT
@@ -699,8 +863,12 @@ TEST_P(OatFileAssistantTest, VdexUpToDateNoOat) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatForFilter);
 }
 
 // Case: We have a DEX file and speed-profile OAT file for it.
@@ -724,14 +892,50 @@ TEST_P(OatFileAssistantTest, ProfileOatUpToDate) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeedProfile,
+                        default_trigger_,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOat);
+  EXPECT_EQ(
+      OatFileAssistant::kNoDexOptNeeded,
+      oat_file_assistant.GetDexOptNeeded(CompilerFilter::kSpeedProfile, /*profile_changed=*/false));
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kVerify,
+                        default_trigger_,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOat);
   EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeedProfile, false));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify, false));
+            oat_file_assistant.GetDexOptNeeded(CompilerFilter::kVerify, /*profile_changed=*/false));
+
+  OatFileAssistant::DexOptTrigger profile_changed_trigger = default_trigger_;
+  profile_changed_trigger.targetFilterIsSame = true;
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeedProfile,
+                        profile_changed_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOat);
+  EXPECT_EQ(
+      OatFileAssistant::kDex2OatForFilter,
+      oat_file_assistant.GetDexOptNeeded(CompilerFilter::kSpeedProfile, /*profile_changed=*/true));
+
+  // We should not recompile even if `profile_changed` is true because the compiler filter should
+  // not be downgraded.
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kVerify,
+                        profile_changed_trigger,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOat);
+  // The legacy implementation is wrong.
+  // TODO(jiakaiz): Fix it.
   EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeedProfile, true));
-  EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify, true));
+            oat_file_assistant.GetDexOptNeeded(CompilerFilter::kVerify, /*profile_changed=*/true));
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -760,8 +964,12 @@ TEST_P(OatFileAssistantTest, MultiDexOatUpToDate) {
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str(),
                                                                /*context=*/nullptr,
                                                                /*load_executable=*/true);
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
   EXPECT_TRUE(oat_file_assistant.HasDexFiles());
 
   // Verify we can load both dex files.
@@ -800,8 +1008,12 @@ TEST_P(OatFileAssistantTest, MultiDexNonMainOutOfDate) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
   EXPECT_TRUE(oat_file_assistant.HasDexFiles());
 }
 
@@ -828,10 +1040,18 @@ TEST_P(OatFileAssistantTest, OatDexOutOfDate) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -857,8 +1077,12 @@ TEST_P(OatFileAssistantTest, VdexDexOutOfDate) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
 }
 
 // Case: We have a MultiDEX (ODEX) VDEX file where the non-main multidex entry
@@ -876,8 +1100,12 @@ TEST_P(OatFileAssistantTest, VdexMultiDexNonMainOutOfDate) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
 }
 
 // Case: We have a DEX file and an OAT file out of date with respect to the
@@ -902,12 +1130,24 @@ TEST_P(OatFileAssistantTest, OatImageOutOfDate) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
-  EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -970,10 +1210,18 @@ TEST_P(OatFileAssistantTest, OatVerifyAtRuntimeImageOutOfDate) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOat,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -995,10 +1243,18 @@ TEST_P(OatFileAssistantTest, DexOdexNoOat) {
   // Verify the status.
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
@@ -1022,20 +1278,36 @@ TEST_P(OatFileAssistantTest, ResourceOnlyDex) {
   // Verify the status.
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kVerify));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kVerify,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
   EXPECT_FALSE(oat_file_assistant.HasDexFiles());
 
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -1061,8 +1333,12 @@ TEST_P(OatFileAssistantTest, OdexOatOverlap) {
                                                                /*context=*/nullptr,
                                                                /*load_executable=*/true);
 
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-            GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
@@ -1095,10 +1371,18 @@ TEST_P(OatFileAssistantTest, DexVerifyAtRuntimeOdexNoOat) {
   // Verify the status.
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
-  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kExtract,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/true,
+                               /*expected_location=*/OatFileAssistant::kLocationOdex,
+                               /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
@@ -1257,8 +1541,12 @@ TEST_P(OatFileAssistantTest, NonAbsoluteDexLocation) {
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
 }
@@ -1273,8 +1561,12 @@ TEST_P(OatFileAssistantTest, ShortDexLocation) {
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
-  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/false,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
   EXPECT_FALSE(oat_file_assistant.HasDexFiles());
@@ -1290,8 +1582,12 @@ TEST_P(OatFileAssistantTest, LongDexExtension) {
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
 
-  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
-      GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kSpeed));
+  VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                               CompilerFilter::kSpeed,
+                               /*expected_dexopt_needed=*/true,
+                               /*expected_is_vdex_usable=*/false,
+                               /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
+                               /*expected_legacy_result=*/OatFileAssistant::kDex2OatFromScratch);
 
   EXPECT_FALSE(oat_file_assistant.IsInBootClassPath());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
@@ -1524,8 +1820,12 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithOutOfDateContext) {
     OatFileAssistant oat_file_assistant =
         CreateOatFileAssistant(dex_location.c_str(), updated_context.get());
     // DexOptNeeded should advise compilation for filter when the context changes.
-    EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
-              GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kDefaultCompilerFilter));
+    VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                                 CompilerFilter::kDefaultCompilerFilter,
+                                 /*expected_dexopt_needed=*/true,
+                                 /*expected_is_vdex_usable=*/true,
+                                 /*expected_location=*/OatFileAssistant::kLocationOdex,
+                                 /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
   }
   {
     std::unique_ptr<ClassLoaderContext> updated_context = ClassLoaderContext::Create(context_str);
@@ -1540,8 +1840,12 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithOutOfDateContext) {
     OatFileAssistant oat_file_assistant =
         CreateOatFileAssistant(dex_location.c_str(), updated_context.get());
     // Now check that DexOptNeeded does not advise compilation if we only extracted the file.
-    EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-              GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
+    VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                                 CompilerFilter::kExtract,
+                                 /*expected_dexopt_needed=*/false,
+                                 /*expected_is_vdex_usable=*/true,
+                                 /*expected_location=*/OatFileAssistant::kLocationOdex,
+                                 /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
   }
   {
     std::unique_ptr<ClassLoaderContext> updated_context = ClassLoaderContext::Create(context_str);
@@ -1556,9 +1860,275 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithOutOfDateContext) {
     OatFileAssistant oat_file_assistant =
         CreateOatFileAssistant(dex_location.c_str(), updated_context.get());
     // Now check that DexOptNeeded does not advise compilation if we only verify the file.
-    EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-              GetDexOptNeeded(&oat_file_assistant, CompilerFilter::kExtract));
+    VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                                 CompilerFilter::kExtract,
+                                 /*expected_dexopt_needed=*/false,
+                                 /*expected_is_vdex_usable=*/true,
+                                 /*expected_location=*/OatFileAssistant::kLocationOdex,
+                                 /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
   }
+}
+
+// Case: We have a DEX file and speed-profile ODEX file for it. The caller's intention is to
+// downgrade the compiler filter.
+// Expect: Dexopt should be performed only if the target compiler filter is worse than the current
+// one.
+TEST_P(OatFileAssistantTest, Downgrade) {
+  std::string dex_location = GetScratchDir() + "/TestDex.jar";
+  std::string odex_location = GetOdexDir() + "/TestDex.odex";
+  Copy(GetDexSrc1(), dex_location);
+  GenerateOdexForTest(dex_location, odex_location, CompilerFilter::kSpeedProfile);
+
+  auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
+
+  OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
+  OatFileAssistant::DexOptTrigger downgrade_trigger{.targetFilterIsWorse = true};
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeed,
+                        downgrade_trigger,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOdex);
+  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kSpeed, /*profile_changed=*/false, /*downgrade=*/true));
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeedProfile,
+                        downgrade_trigger,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOdex);
+  EXPECT_EQ(-OatFileAssistant::kNoDexOptNeeded,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kSpeedProfile, /*profile_changed=*/false, /*downgrade=*/true));
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kVerify,
+                        downgrade_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOdex);
+  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kVerify, /*profile_changed=*/false, /*downgrade=*/true));
+}
+
+// Case: We have a DEX file but we don't have an ODEX file for it. The caller's intention is to
+// downgrade the compiler filter.
+// Expect: Dexopt should never be performed regardless of the target compiler filter.
+// The legacy implementation is wrong.
+// TODO(jiakaiz): Fix it.
+TEST_P(OatFileAssistantTest, DowngradeNoOdex) {
+  std::string dex_location = GetScratchDir() + "/TestDex.jar";
+  Copy(GetDexSrc1(), dex_location);
+
+  auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
+
+  OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
+  OatFileAssistant::DexOptTrigger downgrade_trigger{.targetFilterIsWorse = true};
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeed,
+                        downgrade_trigger,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/false,
+                        /*expected_location=*/OatFileAssistant::kLocationNoneOrError);
+  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kSpeed, /*profile_changed=*/false, /*downgrade=*/true));
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeedProfile,
+                        downgrade_trigger,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/false,
+                        /*expected_location=*/OatFileAssistant::kLocationNoneOrError);
+  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kSpeedProfile, /*profile_changed=*/false, /*downgrade=*/true));
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kVerify,
+                        downgrade_trigger,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/false,
+                        /*expected_location=*/OatFileAssistant::kLocationNoneOrError);
+  EXPECT_EQ(OatFileAssistant::kDex2OatFromScratch,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kVerify, /*profile_changed=*/false, /*downgrade=*/true));
+}
+
+// Case: We have a DEX file and speed-profile ODEX file for it. The legacy version is called with
+// both `profile_changed` and `downgrade` being true. This won't happen in the real case. Just to be
+// complete.
+// Expect: The behavior should be as `profile_changed` is false and `downgrade` is true.
+// The legacy implementation is wrong.
+// TODO(jiakaiz): Fix it.
+TEST_P(OatFileAssistantTest, ProfileChangedDowngrade) {
+  std::string dex_location = GetScratchDir() + "/TestDex.jar";
+  std::string odex_location = GetOdexDir() + "/TestDex.odex";
+  Copy(GetDexSrc1(), dex_location);
+  GenerateOdexForTest(dex_location, odex_location, CompilerFilter::kSpeedProfile);
+
+  auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
+
+  OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
+
+  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kSpeed, /*profile_changed=*/true, /*downgrade=*/true));
+
+  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kSpeedProfile, /*profile_changed=*/true, /*downgrade=*/true));
+
+  EXPECT_EQ(-OatFileAssistant::kDex2OatForFilter,
+            oat_file_assistant.GetDexOptNeeded(
+                CompilerFilter::kVerify, /*profile_changed=*/true, /*downgrade=*/true));
+}
+
+// Case: We have a DEX file and speed-profile ODEX file for it. The caller's intention is to force
+// the compilation.
+// Expect: Dexopt should be performed regardless of the target compiler filter. The VDEX file is
+// usable.
+//
+// The legacy version does not support this case. Historically, Package Manager does not take the
+// result from OatFileAssistant for forced compilation. It uses an arbitrary non-zero value instead.
+// Therefore, we don't test the legacy version here.
+TEST_P(OatFileAssistantTest, Force) {
+  std::string dex_location = GetScratchDir() + "/TestDex.jar";
+  std::string odex_location = GetOdexDir() + "/TestDex.odex";
+  Copy(GetDexSrc1(), dex_location);
+  GenerateOdexForTest(dex_location, odex_location, CompilerFilter::kSpeedProfile);
+
+  auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
+
+  OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
+  OatFileAssistant::DexOptTrigger force_trigger{.targetFilterIsBetter = true,
+                                                .targetFilterIsSame = true,
+                                                .targetFilterIsWorse = true,
+                                                .primaryBootImageBecomesUsable = true};
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeed,
+                        force_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOdex);
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeedProfile,
+                        force_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOdex);
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kVerify,
+                        force_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationOdex);
+}
+
+// Case: We have a DEX file but we don't have an ODEX file for it. The caller's intention is to
+// force the compilation.
+// Expect: Dexopt should be performed regardless of the target compiler filter. No VDEX file is
+// usable.
+//
+// The legacy version does not support this case. Historically, Package Manager does not take the
+// result from OatFileAssistant for forced compilation. It uses an arbitrary non-zero value instead.
+// Therefore, we don't test the legacy version here.
+TEST_P(OatFileAssistantTest, ForceNoOdex) {
+  std::string dex_location = GetScratchDir() + "/TestDex.jar";
+  Copy(GetDexSrc1(), dex_location);
+
+  auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
+
+  OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
+  OatFileAssistant::DexOptTrigger force_trigger{.targetFilterIsBetter = true,
+                                                .targetFilterIsSame = true,
+                                                .targetFilterIsWorse = true,
+                                                .primaryBootImageBecomesUsable = true};
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeed,
+                        force_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/false,
+                        /*expected_location=*/OatFileAssistant::kLocationNoneOrError);
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeedProfile,
+                        force_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/false,
+                        /*expected_location=*/OatFileAssistant::kLocationNoneOrError);
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kVerify,
+                        force_trigger,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/false,
+                        /*expected_location=*/OatFileAssistant::kLocationNoneOrError);
+}
+
+// Case: We have a DEX file and a DM file for it.
+// Expect: Dexopt should be performed if the compiler filter is better than "verify". The location
+// should be kLocationDm.
+//
+// The legacy version is wrong this case. It returns kDex2OatForFilter with an arbitrary sign if the
+// target compiler filter is better than "verify".
+// TODO(jiakaiz): Fix it.
+TEST_P(OatFileAssistantTest, DmUpToDate) {
+  std::string dex_location = GetScratchDir() + "/TestDex.jar";
+  std::string dm_location = GetScratchDir() + "/TestDex.dm";
+  std::string odex_location = GetOdexDir() + "/TestDex.odex";
+  std::string vdex_location = GetOdexDir() + "/TestDex.vdex";
+  Copy(GetDexSrc1(), dex_location);
+
+  // Generate temporary ODEX and VDEX files in order to create the DM file from.
+  GenerateOdexForTest(
+      dex_location, odex_location, CompilerFilter::kVerify, "install", {"--copy-dex-files=false"});
+
+  CreateDexMetadata(vdex_location, dm_location);
+
+  // Cleanup the temporary files.
+  ASSERT_EQ(0, unlink(odex_location.c_str()));
+  ASSERT_EQ(0, unlink(vdex_location.c_str()));
+
+  auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
+
+  OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeed,
+                        default_trigger_,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationDm);
+  EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
+            abs(oat_file_assistant.GetDexOptNeeded(CompilerFilter::kSpeed)));
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kSpeedProfile,
+                        default_trigger_,
+                        /*expected_dexopt_needed=*/true,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationDm);
+  EXPECT_EQ(OatFileAssistant::kDex2OatForFilter,
+            abs(oat_file_assistant.GetDexOptNeeded(CompilerFilter::kSpeedProfile)));
+
+  VerifyGetDexOptNeeded(&oat_file_assistant,
+                        CompilerFilter::kVerify,
+                        default_trigger_,
+                        /*expected_dexopt_needed=*/false,
+                        /*expected_is_vdex_usable=*/true,
+                        /*expected_location=*/OatFileAssistant::kLocationDm);
+  EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
+            abs(oat_file_assistant.GetDexOptNeeded(CompilerFilter::kVerify)));
 }
 
 // Test that GetLocation of a dex file is the same whether the dex
