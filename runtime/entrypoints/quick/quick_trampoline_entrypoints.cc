@@ -2099,6 +2099,14 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
     }
   }
 
+  instrumentation::Instrumentation* instr = Runtime::Current()->GetInstrumentation();
+  if (UNLIKELY(instr->AreExitStubsInstalled() && Runtime::Current()->IsJavaDebuggable())) {
+    instr->MethodEnterEvent(self, called);
+    if (self->IsExceptionPending()) {
+      return nullptr;
+    }
+  }
+
   // Skip calling `artJniMethodStart()` for @CriticalNative and @FastNative.
   if (LIKELY(normal_native)) {
     // Start JNI.
@@ -2638,6 +2646,13 @@ extern "C" uint64_t artInvokeCustom(uint32_t call_site_idx, Thread* self, ArtMet
   return result.GetJ();
 }
 
+extern "C" void artJniMethodEntryHook(Thread* self)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  instrumentation::Instrumentation* instr = Runtime::Current()->GetInstrumentation();
+  ArtMethod* method = *self->GetManagedStack()->GetTopQuickFrame();
+  instr->MethodEnterEvent(self, method);
+}
+
 extern "C" void artMethodEntryHook(ArtMethod* method, Thread* self, ArtMethod** sp ATTRIBUTE_UNUSED)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   instrumentation::Instrumentation* instr = Runtime::Current()->GetInstrumentation();
@@ -2655,6 +2670,14 @@ extern "C" int artMethodExitHook(Thread* self,
                                  uint64_t* gpr_result,
                                  uint64_t* fpr_result)
     REQUIRES_SHARED(Locks::mutator_lock_) {
+  // For GenericJniTrampolines we call artMethodExitHook even for non debuggable runtimes though we
+  // still install instrumentation stubs. So just return early here so we don't call method exit
+  // twice. In all other cases (JITed JNI stubs / JITed code) we only call this for debuggable
+  // runtimes.
+  if (!Runtime::Current()->IsJavaDebuggable()) {
+    return;
+  }
+
   DCHECK_EQ(reinterpret_cast<uintptr_t>(self), reinterpret_cast<uintptr_t>(Thread::Current()));
   CHECK(gpr_result != nullptr);
   CHECK(fpr_result != nullptr);
@@ -2683,8 +2706,9 @@ extern "C" int artMethodExitHook(Thread* self,
     deoptimize = instr->ShouldDeoptimizeCaller(self, visitor);
 
     // If we need a deoptimization MethodExitEvent will be called by the interpreter when it
-    // re-executes the return instruction.
-    if (!deoptimize) {
+    // re-executes the return instruction. For native methods we have to process method exit
+    // events here since deoptimization just removes the native frame.
+    if (!deoptimize || method->IsNative()) {
       instr->MethodExitEvent(self,
                              method,
                              /* frame= */ {},
@@ -2704,7 +2728,11 @@ extern "C" int artMethodExitHook(Thread* self,
 
   if (deoptimize) {
     DeoptimizationMethodType deopt_method_type = instr->GetDeoptimizationMethodType(method);
-    self->PushDeoptimizationContext(return_value, is_ref, nullptr, false, deopt_method_type);
+    self->PushDeoptimizationContext(return_value,
+                                    is_ref,
+                                    self->GetException(),
+                                    false,
+                                    deopt_method_type);
     artDeoptimize(self);
     UNREACHABLE();
   }
