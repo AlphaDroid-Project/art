@@ -2782,6 +2782,9 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
   if (HasAlwaysThrowingInvokes()) {
     outer_graph->SetHasAlwaysThrowingInvokes(true);
   }
+  if (HasAlwaysThrowingInvokes()) {
+    outer_graph->SetHasAlwaysThrowingInvokes(true);
+  }
 
   HInstruction* return_value = nullptr;
   if (GetBlocks().size() == 3) {
