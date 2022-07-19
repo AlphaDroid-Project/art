@@ -66,6 +66,7 @@ cc_defaults {
                 "base/mem_map_unix.cc",
             ],
             static_libs: [
+                "libcap",
                 // ZipArchive support, the order matters here to get all symbols.
                 "libziparchive",
             ],
@@ -78,6 +79,9 @@ cc_defaults {
                 "libbase",
             ],
             export_shared_lib_headers: ["libbase"], // ART's macros.h depends on libbase's macros.h.
+            export_static_lib_headers: [
+                "libcap",
+            ],
         },
         not_windows: {
             srcs: [
@@ -96,7 +100,13 @@ cc_defaults {
                 // For common macros.
                 "libbase",
             ],
+            static_libs: [
+                "libcap",
+            ],
             export_shared_lib_headers: ["libbase"], // ART's macros.h depends on libbase's macros.h.
+            export_static_lib_headers: [
+                "libcap",
+            ],
         },
         windows: {
             srcs: [
@@ -133,6 +143,18 @@ cc_defaults {
         "libz",
         "libziparchive",
     ],
+    target: {
+        android: {
+            whole_static_libs: [
+                "libcap",
+            ],
+        },
+        not_windows: {
+            whole_static_libs: [
+                "libcap",
+            ],
+        },
+    },
 }
 
 cc_defaults {
