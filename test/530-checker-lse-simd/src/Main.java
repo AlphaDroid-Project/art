@@ -254,7 +254,6 @@ public class Main {
   /// CHECK:        BoundsCheck loop:none
   /// CHECK:        ArrayGet
   /// CHECK:        Add
-  /// CHECK:        ArrayLength
   //
   /// CHECK:        VecLoad loop:{{B\d+}}
   /// CHECK:        VecStore
@@ -267,7 +266,6 @@ public class Main {
   /// CHECK-START-ARM64: double[] Main.$noinline$test06(int) load_store_elimination (after)
   /// CHECK:        BoundsCheck loop:none
   /// CHECK:        Add
-  /// CHECK:        ArrayLength
   //
   /// CHECK:        VecLoad loop:{{B\d+}}
   /// CHECK:        VecAdd
