@@ -154,7 +154,6 @@ OatFileAssistant::OatFileAssistant(const char* dex_location,
         .boot_class_path = runtime->GetBootClassPath(),
         .boot_class_path_locations = runtime->GetBootClassPathLocations(),
         .boot_class_path_fds = &runtime->GetBootClassPathFds(),
-        .use_jit_zygote = runtime->HasImageWithProfile(),
         .deny_art_apex_data_files = runtime->DenyArtApexDataFiles(),
         .apex_versions = runtime->GetApexVersions(),
     });
@@ -740,7 +739,7 @@ bool OatFileAssistant::IsPrimaryBootImageUsable() {
     return cached_is_boot_image_usable_.value();
   }
 
-  if (runtime_options_->image_locations.empty() || runtime_options_->use_jit_zygote) {
+  if (runtime_options_->image_locations.empty()) {
     return false;
   }
 
