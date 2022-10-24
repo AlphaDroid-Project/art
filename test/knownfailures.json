@@ -1172,6 +1172,7 @@
                   "831-unresolved-field",
                   "833-background-verification",
                   "836-32768classes",
+                  "844-exception",
                   "999-redefine-hiddenapi",
                   "1000-non-moving-space-stress",
                   "1001-app-image-regions",
