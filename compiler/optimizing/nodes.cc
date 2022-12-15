@@ -2779,6 +2779,9 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
   if (HasPredicatedSIMD()) {
     outer_graph->SetHasPredicatedSIMD(true);
   }
+  if (HasMonitorOperations()) {
+    outer_graph->SetHasMonitorOperations(true);
+  }
   if (HasAlwaysThrowingInvokes()) {
     outer_graph->SetHasAlwaysThrowingInvokes(true);
   }
