@@ -736,16 +736,13 @@ void Runtime::PreZygoteFork() {
     GetJit()->PreZygoteFork();
   }
   if (!heap_->HasZygoteSpace()) {
-    Thread* self = Thread::Current();
     // This is the first fork. Update ArtMethods in the boot classpath now to
     // avoid having forked apps dirty the memory.
-
+    ScopedObjectAccess soa(Thread::Current());
     // Ensure we call FixupStaticTrampolines on all methods that are
     // initialized.
-    class_linker_->MakeInitializedClassesVisiblyInitialized(self, /*wait=*/ true);
+    class_linker_->MakeInitializedClassesVisiblyInitialized(soa.Self(), /*wait=*/ true);
     // Update native method JNI entrypoints.
-
-    ScopedObjectAccess soa(self);
     FindNativeMethodsVisitor visitor(soa.Self(), class_linker_);
     class_linker_->VisitClasses(&visitor);
   }
@@ -2728,13 +2725,7 @@ void Runtime::EnterTransactionMode(bool strict, mirror::Class* root) {
     // Make initialized classes visibly initialized now. If that happened during the transaction
     // and then the transaction was aborted, we would roll back the status update but not the
     // ClassLinker's bookkeeping structures, so these classes would never be visibly initialized.
-    // TODO(b/253691761): We should normally be in a suspended state to call
-    // MakeInitializedClassesVisiblyInitialized with wait == true. Here we are not. Suspending
-    // here causes failures with heap poisoning, so this is apparently called where suspension is
-    // not allowed. Explain why this is safe as is, or fix.
-    GetClassLinker()->MakeInitializedClassesVisiblyInitialized(Thread::Current(),
-                                                               /*wait=*/ true,
-                                                               /*allowLockChecking=*/ false);
+    GetClassLinker()->MakeInitializedClassesVisiblyInitialized(Thread::Current(), /*wait=*/ true);
     // Pass the runtime `ArenaPool` to the transaction.
     arena_pool = GetArenaPool();
   } else {

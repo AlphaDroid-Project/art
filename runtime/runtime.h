@@ -567,8 +567,7 @@ class Runtime {
 
   // Transaction support.
   bool IsActiveTransaction() const;
-  // EnterTransactionMode may suspend.
-  void EnterTransactionMode(bool strict, mirror::Class* root) REQUIRES_SHARED(Locks::mutator_lock_);
+  void EnterTransactionMode(bool strict, mirror::Class* root);
   void ExitTransactionMode();
   void RollbackAllTransactions() REQUIRES_SHARED(Locks::mutator_lock_);
   // Transaction rollback and exit transaction are always done together, it's convenience to
