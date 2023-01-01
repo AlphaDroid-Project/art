@@ -120,7 +120,7 @@ class dchecked_vector : private std::vector<T, Alloc> {
 
   // Element access: subscript operator. Check index.
   reference operator[](size_type n) {
-    DCHECK_LT(n, size());
+    DCHECK_LE(n, size());
     return Base::operator[](n);
   }
   const_reference operator[](size_type n) const {
